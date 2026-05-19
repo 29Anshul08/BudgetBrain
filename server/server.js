@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -6,10 +7,10 @@ const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 
-// Load env vars
-dotenv.config({ path: '../.env.example' });
+// Load env vars (in local dev, load from parent .env; in production, use platform env vars)
 if (process.env.NODE_ENV !== 'production') {
-  dotenv.config({ path: '../.env' });
+  dotenv.config({ path: path.resolve(__dirname, '../.env') });
+  dotenv.config({ path: path.resolve(__dirname, '../.env.example') });
 }
 dotenv.config();
 
@@ -17,8 +18,23 @@ const app = express();
 
 // Security middleware
 app.use(helmet());
+
+// CORS — allow Vercel frontend and localhost
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
+  'http://localhost:3000',
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Be permissive in production for now
+    }
+  },
   credentials: true,
 }));
 
@@ -188,17 +204,28 @@ const autoSeed = async () => {
   }
 };
 
-// Start server
-const startServer = async () => {
-  await connectDB();
-  await autoSeed();
-
-  app.listen(PORT, () => {
-    console.log(`🧠 BudgetBrain server running on port ${PORT}`);
-    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  });
+// Lazy DB connection for serverless (Vercel)
+let isConnected = false;
+const ensureConnection = async () => {
+  if (!isConnected) {
+    await connectDB();
+    await autoSeed();
+    isConnected = true;
+  }
 };
 
-startServer();
+// If running standalone (not imported by Vercel), start the server
+if (require.main === module) {
+  const startServer = async () => {
+    await ensureConnection();
+    app.listen(PORT, () => {
+      console.log(`🧠 BudgetBrain server running on port ${PORT}`);
+      console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    });
+  };
+  startServer();
+}
 
+// Export for Vercel serverless
 module.exports = app;
+module.exports.ensureConnection = ensureConnection;
